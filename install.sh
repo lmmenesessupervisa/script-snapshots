@@ -87,7 +87,7 @@ fi
 ok "Conexión a internet disponible"
 
 # Archivos fuente presentes
-REQUIRED_FILES=(backup.conf backup-restic.sh sync-to-drive.sh uninstall.sh)
+REQUIRED_FILES=(backup-restic.sh sync-to-drive.sh uninstall.sh)
 all_present=true
 for f in "${REQUIRED_FILES[@]}"; do
     if [[ ! -f "${SOURCE_DIR}/${f}" ]]; then
