@@ -772,25 +772,37 @@ menu_restore() {
     info "Puedes restaurar solo un archivo/carpeta específico, o todo el snapshot."
     ask "Ruta a restaurar (ej: /etc/nginx) — Enter para restaurar TODO:"
     read -r restore_include
+    # Ignorar "TODO" y cadenas vacías — ambas significan restaurar el snapshot completo
+    [[ "$restore_include" == "TODO" || "$restore_include" == "todo" ]] && restore_include=""
 
     blank
-    ask "Directorio destino (ej: /tmp/restauracion — NUNCA uses / directamente):"
+    printf "  ${C_DIM}  Destino sugerido: / para restaurar en su lugar original${C_RESET}\n"
+    ask "Directorio destino [/]:"
     read -r target_dir
-    [[ -z "$target_dir" ]] && { err_ui "Debes indicar un directorio destino"; return; }
+    target_dir="${target_dir:-/}"
 
     if [[ "$target_dir" == "/" ]]; then
-        err_ui "No puedes restaurar directamente en /  — usa un directorio temporal"
-        return
+        blank
+        warn_ui "Vas a restaurar DIRECTAMENTE sobre el sistema de archivos raíz."
+        warn_ui "Los archivos existentes serán SOBREESCRITOS sin posibilidad de deshacer."
+        ask "Escribe 'CONFIRMO' para continuar:"
+        read -r confirm_root
+        [[ "$confirm_root" != "CONFIRMO" ]] && { info "Cancelado."; return; }
     fi
 
     blank
     warn_ui "Se restaurará snapshot '$snap_id' en: $target_dir"
-    [[ -n "$restore_include" ]] && info "Solo se restaurará: $restore_include"
+    if [[ -n "$restore_include" ]]; then
+        info "Solo se restaurará: $restore_include"
+    else
+        info "Se restaurará el snapshot completo"
+    fi
     ask "¿Confirmar restauración? (s/N):"
     read -r ans
     [[ "${ans,,}" != "s" ]] && { info "Cancelado."; return; }
 
-    mkdir -p "$target_dir" 2>/dev/null || { err_ui "No se pudo crear el directorio destino"; return; }
+    [[ "$target_dir" != "/" ]] && \
+        { mkdir -p "$target_dir" 2>/dev/null || { err_ui "No se pudo crear el directorio destino"; return; }; }
 
     local -a restore_args=("-r" "$repo" "restore" "$snap_id" "--target" "$target_dir")
     [[ -n "$restore_include" ]] && restore_args+=("--include" "$restore_include")
