@@ -698,11 +698,62 @@ menu_cron_manage() {
                 info "No hay tareas cron instaladas para este sistema"
             ;;
         2)
+            blank
+            printf "  ${C_BOLD}Tareas recomendadas:${C_RESET}\n"
+            blank
+            printf "  ${C_DIM}  [Backup]   Día 1 de cada mes a las 3:00 AM${C_RESET}\n"
+            printf "  ${C_DIM}  [Sync]     Sincronización a Drive cada 6 horas${C_RESET}\n"
+            printf "  ${C_DIM}  [Limpieza] Logs viejos — día 1 de cada mes${C_RESET}\n"
+            blank
+
+            # --- Frecuencia de backup ---
+            printf "  ${C_BOLD}Frecuencia de backup${C_RESET}\n"
+            opt 1 "Mensual  — día 1 de cada mes a las 3:00 AM  [recomendado]"
+            opt 2 "Semanal  — todos los domingos a las 3:00 AM"
+            opt 3 "Diario   — todos los días a las 3:00 AM"
+            ask "Elige frecuencia de backup [1]:"
+            read -r _bk_freq
+            case "${_bk_freq:-1}" in
+                2) _bk_cron="0 3 * * 0" ;  _bk_label="semanal (domingos 3:00 AM)" ;;
+                3) _bk_cron="0 3 * * *" ;  _bk_label="diario (3:00 AM)" ;;
+                *) _bk_cron="0 3 1 * *" ;  _bk_label="mensual (día 1, 3:00 AM)" ;;
+            esac
+            blank
+
+            # --- Frecuencia de sincronización ---
+            printf "  ${C_BOLD}Frecuencia de sincronización a Drive${C_RESET}\n"
+            opt 1 "Cada 2 horas"
+            opt 2 "Cada 4 horas"
+            opt 3 "Cada 6 horas  [recomendado]"
+            opt 4 "Cada 12 horas"
+            opt 5 "Una vez al día (medianoche)"
+            ask "Elige frecuencia de sync [3]:"
+            read -r _sync_freq
+            case "${_sync_freq:-3}" in
+                1) _sync_cron="0 */2 * * *"  ; _sync_label="cada 2 horas" ;;
+                2) _sync_cron="0 */4 * * *"  ; _sync_label="cada 4 horas" ;;
+                4) _sync_cron="0 */12 * * *" ; _sync_label="cada 12 horas" ;;
+                5) _sync_cron="0 0 * * *"    ; _sync_label="una vez al día (medianoche)" ;;
+                *) _sync_cron="0 */6 * * *"  ; _sync_label="cada 6 horas" ;;
+            esac
+            blank
+
+            # --- Confirmación ---
+            printf "  ${C_BOLD}Se instalarán las siguientes tareas:${C_RESET}\n"
+            blank
+            info "  Backup       → ${_bk_label}"
+            info "  Sync a Drive → ${_sync_label}"
+            info "  Limpieza     → día 1 de cada mes"
+            blank
+            ask "¿Confirmar instalación? (S/n):"
+            read -r _confirm
+            [[ "${_confirm,,}" == "n" ]] && { info "Cancelado"; break; }
+            blank
+
             local tmp; tmp="$(mktemp)"
-            # Usar crontab de root si está disponible (necesario para leer archivos del sistema)
             local _cron_user=""
             if [[ $EUID -eq 0 ]]; then
-                _cron_user=""   # ya somos root, crontab -l sin -u
+                _cron_user=""
             elif sudo -n crontab -l &>/dev/null 2>&1; then
                 _cron_user="sudo"
             fi
@@ -715,8 +766,8 @@ menu_cron_manage() {
 
             cat >> "$tmp" <<EOF
 ${marker}
-0 3 * * * bash ${SCRIPT_DIR}/backup-restic.sh --backup >> ${LOG_DIR}/cron.log 2>&1
-0 */6 * * * bash ${SCRIPT_DIR}/sync-to-drive.sh >> ${LOG_DIR}/cron.log 2>&1
+${_bk_cron} bash ${SCRIPT_DIR}/backup-restic.sh --backup >> ${LOG_DIR}/cron.log 2>&1
+${_sync_cron} bash ${SCRIPT_DIR}/sync-to-drive.sh >> ${LOG_DIR}/cron.log 2>&1
 0 0 1 * * find ${LOG_DIR} -name "*.log" -mtime +30 -delete
 EOF
             if [[ -n "$_cron_user" ]]; then
@@ -728,9 +779,10 @@ EOF
                 warn_ui "Para backup completo ejecuta este script con sudo e instala el cron de nuevo"
             fi
             rm -f "$tmp"
-            info "  Backup diario a las 3:00 AM"
-            info "  Sincronización a Drive cada 6 horas"
-            info "  Limpieza de logs viejos el día 1 de cada mes"
+            blank
+            ok "Backup       → ${_bk_label}"
+            ok "Sync a Drive → ${_sync_label}"
+            ok "Limpieza     → día 1 de cada mes"
             ;;
         3)
             local tmp; tmp="$(mktemp)"

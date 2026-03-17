@@ -404,13 +404,52 @@ sudo bash /opt/backup-scripts/backup-restic.sh
 
 Las tareas se instalan en el **crontab de root** para tener acceso completo al sistema.
 
-### Tareas instaladas por defecto
+Accede a la gestión de cron desde el menú → **opción [11] Gestionar tareas automáticas (cron)**.
 
-| Tarea | Horario | Comando |
-|-------|---------|---------|
-| Backup diario | 3:00 AM | `backup-restic.sh --backup` |
-| Sincronización a Drive | Cada 6 horas | `sync-to-drive.sh` |
-| Limpieza de logs | Día 1 de cada mes | `find /var/log/restic -name "*.log" -mtime +30 -delete` |
+### Opciones del menú de cron
+
+| Opción | Función |
+|--------|---------|
+| `[1]` | Ver tareas cron actuales instaladas |
+| `[2]` | Instalar tareas cron (con configuración de frecuencia) |
+| `[3]` | Eliminar todas las tareas cron del sistema |
+
+### Tareas recomendadas (valores por defecto)
+
+| Tarea | Horario por defecto | Opciones disponibles |
+|-------|---------------------|----------------------|
+| **Backup** | Día 1 de cada mes, 3:00 AM | Mensual / Semanal (domingos) / Diario |
+| **Sincronización a Drive** | Cada 6 horas | Cada 2h / 4h / 6h / 12h / 1 vez al día |
+| **Limpieza de logs** | Día 1 de cada mes | — (fijo) |
+
+### Flujo de instalación (opción [2])
+
+Al seleccionar **Instalar tareas cron**, el script:
+
+1. Muestra un resumen de las tareas recomendadas
+2. Pregunta la **frecuencia de backup** que prefieres
+3. Pregunta la **frecuencia de sincronización** a Drive
+4. Muestra un resumen final y pide confirmación antes de instalar
+
+```
+  Tareas recomendadas:
+
+    [Backup]   Día 1 de cada mes a las 3:00 AM
+    [Sync]     Sincronización a Drive cada 6 horas
+    [Limpieza] Logs viejos — día 1 de cada mes
+
+  Frecuencia de backup
+   [1]  Mensual  — día 1 de cada mes a las 3:00 AM  [recomendado]
+   [2]  Semanal  — todos los domingos a las 3:00 AM
+   [3]  Diario   — todos los días a las 3:00 AM
+
+  Frecuencia de sincronización a Drive
+   [1]  Cada 2 horas
+   [2]  Cada 4 horas
+   [3]  Cada 6 horas  [recomendado]
+   [4]  Cada 12 horas
+   [5]  Una vez al día (medianoche)
+```
 
 ### Gestión manual
 
@@ -423,8 +462,6 @@ Editar el crontab de root:
 ```bash
 sudo crontab -e
 ```
-
-También puedes gestionar las tareas desde el **menú → opción [11]**.
 
 ---
 
