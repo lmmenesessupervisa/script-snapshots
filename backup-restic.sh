@@ -395,8 +395,30 @@ action_run_backup() {
 
     restic -r "$repo" backup \
         "${BACKUP_DIRS[@]}" "${excl_args[@]}" \
-        --json 2>> "$ERROR_LOG" > "$tmp_out"
-    local _rc=$?
+        --json 2>> "$ERROR_LOG" \
+        | tee "$tmp_out" \
+        | python3 -u - 2>/dev/null <<'PYEOF' || true
+import sys, json
+BAR_W = 35
+for raw in sys.stdin:
+    try:
+        d = json.loads(raw)
+        mt = d.get("message_type", "")
+        if mt == "status":
+            pct   = d.get("percent_done", 0) * 100
+            done  = d.get("files_done", 0)
+            total = d.get("total_files", 0) or 1
+            f     = int(BAR_W * pct / 100)
+            bar   = "\u2588" * f + "\u2591" * (BAR_W - f)
+            sys.stdout.write(f"\r  [{bar}] {pct:5.1f}%  ({done}/{total} archivos)   ")
+            sys.stdout.flush()
+        elif mt == "summary":
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+    except:
+        pass
+PYEOF
+    local _rc=${PIPESTATUS[0]}
 
     # Códigos de salida de restic:
     #   0 = éxito total
