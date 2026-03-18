@@ -120,6 +120,102 @@ build_remote_repo() {
     echo "rclone:${RCLONE_REMOTE}:${DRIVE_PATH}"
 }
 
+# _print_snapshots_table <repo> [ids_file]
+# Muestra tabla formateada de snapshots. Si se pasa ids_file, escribe los IDs
+# (uno por línea) para que el llamador pueda mapear número → ID.
+# Retorna 1 si hay error (lock, conexión, etc.).
+_print_snapshots_table() {
+    local repo="$1"
+    local _ids_file="${2:-}"
+
+    local _json _rc
+    _json="$(restic -r "$repo" snapshots --json 2>&1)"
+    _rc=$?
+
+    # Detectar lock en el output aunque _rc sea 0 (versiones --json de restic)
+    if printf '%s' "$_json" | grep -qiE "repository is already locked|unable to create lock"; then
+        err_ui "El repositorio está BLOQUEADO (stale lock). Usa la opción [16] para desbloquearlo."
+        return 1
+    fi
+
+    if [[ $_rc -ne 0 ]]; then
+        err_ui "No se pudo conectar al repositorio."
+        printf '%s\n' "$_json" | grep -v '^$' | head -5 | while IFS= read -r _l; do
+            printf "  ${C_DIM}  %s${C_RESET}\n" "$_l"
+        done
+        return 1
+    fi
+
+    local _tmp_py; _tmp_py="$(mktemp /tmp/snap_fmt.XXXXXX.py)"
+    cat > "$_tmp_py" << 'PYEOF'
+import json, sys
+from datetime import datetime
+
+ids_file = sys.argv[1] if len(sys.argv) > 1 else ''
+raw = sys.stdin.read()
+
+# restic a veces antepone "repository ... opened" en stdout — saltarlo
+start = raw.find('[')
+if start == -1:
+    print("  (sin snapshots)")
+    sys.exit(0)
+data = json.loads(raw[start:])
+
+CYAN   = '\033[36m'
+BOLD   = '\033[1m'
+DIM    = '\033[2m'
+GREEN  = '\033[32m'
+YELLOW = '\033[33m'
+BLUE   = '\033[34m'
+RESET  = '\033[0m'
+HR     = "  " + "─" * 74
+
+if not data:
+    print(f"  {DIM}(sin snapshots en este repositorio){RESET}")
+    print(f"  {DIM}  Si acabas de hacer un backup, puede ser un problema de caché de rclone.{RESET}")
+    print(f"  {DIM}  Revisa también el log: /var/log/restic/error.log{RESET}")
+    sys.exit(0)
+
+print(HR)
+print(f"  {BOLD}{'#':>3}  {'ID':8}  {'Fecha':10}  {'Hora':8}  {'Host':<18}  Rutas / Tags{RESET}")
+print(HR)
+
+ids = []
+for i, snap in enumerate(data, 1):
+    sid    = snap.get('short_id', snap['id'][:8])
+    t      = snap.get('time', '')
+    try:
+        dt    = datetime.fromisoformat(t.replace('Z', '+00:00'))
+        fecha = dt.strftime('%Y-%m-%d')
+        hora  = dt.strftime('%H:%M:%S')
+    except Exception:
+        fecha = t[:10]; hora = t[11:19]
+    host   = (snap.get('hostname') or '?')[:18]
+    paths  = snap.get('paths') or []
+    tags   = snap.get('tags') or []
+    tag_str = '  ' + YELLOW + '[' + ', '.join(tags) + ']' + RESET if tags else ''
+    path0  = paths[0] if paths else ''
+    pad    = ' ' * (3 + 2 + 8 + 2 + 10 + 2 + 8 + 2 + 18 + 4)
+    print(f"  {CYAN}{i:>3}{RESET}  {BOLD}{sid:8}{RESET}  {fecha}  {hora}  {DIM}{host:<18}{RESET}  {GREEN}{path0}{RESET}{tag_str}")
+    for p in paths[1:]:
+        print(f"  {pad}{GREEN}{p}{RESET}")
+    ids.append(snap['id'])
+
+print(HR)
+n = len(data)
+print(f"  Total: {BOLD}{n}{RESET} snapshot{'s' if n != 1 else ''}\n")
+
+if ids_file:
+    with open(ids_file, 'w') as f:
+        f.write('\n'.join(ids) + '\n')
+PYEOF
+
+    printf '%s\n' "$_json" | python3 "$_tmp_py" "$_ids_file"
+    local _py_rc=$?
+    rm -f "$_tmp_py"
+    return $_py_rc
+}
+
 count_snapshots() {
     local repo="$1"
     restic -r "$repo" snapshots --json 2>/dev/null | \
@@ -392,12 +488,8 @@ action_run_backup() {
     info "Ejecutando backup en ${label}..."
 
     local tmp_out; tmp_out="$(mktemp)"
-
-    restic -r "$repo" backup \
-        "${BACKUP_DIRS[@]}" "${excl_args[@]}" \
-        --json 2>> "$ERROR_LOG" \
-        | tee "$tmp_out" \
-        | python3 -u - 2>/dev/null <<'PYEOF' || true
+    local tmp_py;  tmp_py="$(mktemp /tmp/backup_progress.XXXXXX.py)"
+    cat > "$tmp_py" << 'PYEOF'
 import sys, json
 BAR_W = 35
 for raw in sys.stdin:
@@ -418,7 +510,18 @@ for raw in sys.stdin:
     except:
         pass
 PYEOF
+
+    # set +o pipefail para capturar el exit code de restic (puede ser 3 = parcial)
+    # sin que bash aborte el script. PIPESTATUS[0] = exit code de restic.
+    set +o pipefail
+    restic -r "$repo" backup \
+        "${BACKUP_DIRS[@]}" "${excl_args[@]}" \
+        --json 2>> "$ERROR_LOG" \
+        | tee "$tmp_out" \
+        | python3 -u "$tmp_py" 2>/dev/null
     local _rc=${PIPESTATUS[0]}
+    set -o pipefail
+    rm -f "$tmp_py"
 
     # Códigos de salida de restic:
     #   0 = éxito total
@@ -543,7 +646,7 @@ menu_list_snapshots() {
         1|3)
             if [[ -d "$LOCAL_REPO" ]]; then
                 blank; info "── Repositorio local ──"
-                restic -r "$LOCAL_REPO" snapshots 2>/dev/null || err_ui "No se pudo leer repo local"
+                _print_snapshots_table "$LOCAL_REPO"
             else
                 warn_ui "No existe repositorio local"
             fi
@@ -551,7 +654,7 @@ menu_list_snapshots() {
         2|3)
             blank; info "── Repositorio Google Drive ──"
             local remote; remote="$(build_remote_repo)"
-            restic -r "$remote" snapshots 2>/dev/null || err_ui "No se pudo leer repo remoto (¿está configurado?)"
+            _print_snapshots_table "$remote"
             ;;
         *) warn_ui "Opción inválida" ;;
     esac
@@ -630,19 +733,87 @@ menu_forget_snapshots() {
     esac
 
     blank
-    restic -r "$repo" snapshots 2>/dev/null || { err_ui "No se pudo listar snapshots"; return; }
-    blank
-    ask "ID del snapshot a eliminar (8 chars, ej: abc123de) o 'latest':"
-    read -r snap_id
-    [[ -z "$snap_id" ]] && { info "Cancelado."; return; }
+    local _ids_file; _ids_file="$(mktemp /tmp/snap_ids.XXXXXX)"
+    _print_snapshots_table "$repo" "$_ids_file" || { rm -f "$_ids_file"; return; }
 
-    ask "¿Confirmar eliminación de snapshot '$snap_id'? (s/N):"
+    ask "Número o ID del snapshot a eliminar (o 'latest'):"
+    read -r snap_sel
+    [[ -z "$snap_sel" ]] && { info "Cancelado."; rm -f "$_ids_file"; return; }
+
+    # Resolver número → ID completo
+    local snap_id="$snap_sel"
+    if [[ "$snap_sel" =~ ^[0-9]+$ ]]; then
+        snap_id="$(sed -n "${snap_sel}p" "$_ids_file" 2>/dev/null)"
+        if [[ -z "$snap_id" ]]; then
+            err_ui "Número inválido — elige un número de la lista."
+            rm -f "$_ids_file"; return
+        fi
+        snap_id="${snap_id:0:8}"   # short ID para restic
+    fi
+    rm -f "$_ids_file"
+
+    ask "¿Confirmar eliminación de snapshot '${snap_id}'? (s/N):"
     read -r ans
     [[ "${ans,,}" != "s" ]] && { info "Cancelado."; return; }
 
-    restic -r "$repo" forget "$snap_id" --prune && \
-        ok "Snapshot $snap_id eliminado" || \
+    local _forget_out _forget_rc
+    _forget_out="$(restic -r "$repo" forget "$snap_id" --prune 2>&1)"
+    _forget_rc=$?
+    if [[ $_forget_rc -eq 0 ]]; then
+        ok "Snapshot '${snap_id}' eliminado correctamente"
+    elif printf '%s' "$_forget_out" | grep -q "repository is already locked"; then
+        err_ui "El repositorio está BLOQUEADO (stale lock de un proceso anterior)."
+        warn_ui "Usa la opción [16] → Desbloquear repositorio y vuelve a intentarlo."
+    else
         err_ui "No se pudo eliminar el snapshot"
+        printf '%s\n' "$_forget_out" >&2
+    fi
+}
+
+menu_unlock_repo() {
+    title "Desbloquear repositorio (stale lock)"
+    printf "  ${C_DIM}Esto elimina bloqueos dejados por procesos anteriores que terminaron\n"
+    printf "  abruptamente. Solo hazlo si estás seguro de que no hay otro backup\n"
+    printf "  en ejecución en este momento.${C_RESET}\n"
+    blank
+    opt 1 "Desbloquear repositorio local"
+    opt 2 "Desbloquear repositorio remoto (Drive)"
+    opt 3 "Desbloquear ambos"
+    ask "Opción:"
+    read -r opt_val
+
+    local _unlocked=0
+    case "$opt_val" in
+        1|3)
+            if [[ -d "$LOCAL_REPO" ]]; then
+                info "Desbloqueando repositorio local..."
+                if restic -r "$LOCAL_REPO" unlock 2>&1 | tee -a "$LOG_FILE"; then
+                    ok "Repositorio local desbloqueado"
+                    _unlocked=1
+                else
+                    err_ui "No se pudo desbloquear el repositorio local"
+                fi
+            else
+                warn_ui "No existe repositorio local"
+            fi
+            ;;&
+        2|3)
+            info "Desbloqueando repositorio remoto..."
+            local remote; remote="$(build_remote_repo)"
+            local _out _rc
+            _out="$(restic -r "$remote" unlock 2>&1)"
+            _rc=$?
+            printf '%s\n' "$_out"
+            if [[ $_rc -eq 0 ]]; then
+                ok "Repositorio remoto desbloqueado"
+                _unlocked=1
+            else
+                err_ui "No se pudo desbloquear el repositorio remoto"
+            fi
+            ;;
+        *) warn_ui "Opción inválida"; return ;;
+    esac
+    [[ $_unlocked -eq 1 ]] && info "Ahora puedes volver a intentar la operación que falló."
 }
 
 menu_verify_integrity() {
@@ -933,20 +1104,36 @@ menu_change_password() {
         *) warn_ui "Opción inválida"; return ;;
     esac
 
-    # Verificar existencia de repos antes de pedir contraseñas
-    if $do_local && [[ ! -d "$LOCAL_REPO" ]]; then
-        err_ui "No existe repositorio local en $LOCAL_REPO"
-        err_ui "Haz un backup primero (opción 1) para crearlo."
-        $do_remote || return
-        do_local=false
+    # Auto-inicializar repo local si no existe
+    if $do_local && ! restic -r "$LOCAL_REPO" cat config &>/dev/null 2>&1; then
+        info "Repositorio local no existe — inicializando en $LOCAL_REPO..."
+        mkdir -p "$LOCAL_REPO" 2>/dev/null
+        if restic -r "$LOCAL_REPO" init >> "$LOG_FILE" 2>> "$ERROR_LOG"; then
+            ok "Repositorio local inicializado en $LOCAL_REPO"
+        else
+            err_ui "No se pudo crear el repositorio local en $LOCAL_REPO"
+            $do_remote || return
+            do_local=false
+        fi
     fi
+    # Auto-inicializar repo remoto si no existe (requiere conexión a Drive)
     if $do_remote; then
         local _remote; _remote="$(build_remote_repo)"
-        if ! restic -r "$_remote" cat config &>/dev/null; then
-            err_ui "No se encontró repositorio remoto en $_remote"
-            err_ui "Verifica la conexión a Drive o haz un backup primero."
-            $do_local || return
-            do_remote=false
+        if ! restic -r "$_remote" cat config &>/dev/null 2>&1; then
+            if ! rclone lsd "${RCLONE_REMOTE}:" &>/dev/null 2>&1; then
+                err_ui "No hay conexión a Drive — no se puede crear el repositorio remoto."
+                $do_local || return
+                do_remote=false
+            else
+                info "Repositorio remoto no existe — inicializando en ${RCLONE_REMOTE}:${DRIVE_PATH}..."
+                if restic -r "$_remote" init >> "$LOG_FILE" 2>> "$ERROR_LOG"; then
+                    ok "Repositorio remoto inicializado en ${RCLONE_REMOTE}:${DRIVE_PATH}"
+                else
+                    err_ui "No se pudo crear el repositorio remoto."
+                    $do_local || return
+                    do_remote=false
+                fi
+            fi
         fi
     fi
 
@@ -1562,6 +1749,7 @@ show_menu() {
     printf "  ${C_YELLOW} [5]${C_RESET}  Eliminar repositorio LOCAL\n"
     printf "  ${C_YELLOW} [6]${C_RESET}  Eliminar repositorio en DRIVE\n"
     printf "  ${C_YELLOW} [7]${C_RESET}  Verificar integridad de repositorios\n"
+    printf "  ${C_YELLOW}[16]${C_RESET}  Desbloquear repositorio  ${C_DIM}(stale lock)${C_RESET}\n"
     printf "\n"
     printf "  ${C_BOLD}CONFIGURACIÓN DE GOOGLE DRIVE${C_RESET}\n"
     printf "  ${C_BLUE} [8]${C_RESET}  Reconfigurar Google Drive\n"
@@ -1599,7 +1787,6 @@ do_backup() {
         action_init_remote_repo "$REMOTE_REPO" || { loge "Fallo init remoto"; return 1; }
 
         if action_run_backup "$REMOTE_REPO" "Google Drive"; then
-            action_apply_retention "$REMOTE_REPO" "Google Drive"
             ok "Backup completado → Google Drive"
             log "Backup completado exitosamente en Google Drive"
             _ROLLBACK_STACK=()
@@ -1672,8 +1859,9 @@ while true; do
         13) menu_configure ;;
         14) menu_restore ;;
         15) menu_sync_now ;;
+        16) menu_unlock_repo ;;
         0)  blank; ok "Hasta luego."; blank; exit 0 ;;
-        *)  warn_ui "Opción inválida — elige entre 0 y 15" ;;
+        *)  warn_ui "Opción inválida — elige entre 0 y 16" ;;
     esac
     blank
     ask "Presiona Enter para volver al menú..."

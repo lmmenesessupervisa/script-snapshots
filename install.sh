@@ -87,7 +87,7 @@ fi
 ok "Conexión a internet disponible"
 
 # Archivos fuente presentes
-REQUIRED_FILES=(backup-restic.sh sync-to-drive.sh uninstall.sh)
+REQUIRED_FILES=(backup.conf backup-restic.sh sync-to-drive.sh uninstall.sh)
 all_present=true
 for f in "${REQUIRED_FILES[@]}"; do
     if [[ ! -f "${SOURCE_DIR}/${f}" ]]; then
@@ -415,49 +415,11 @@ title "Paso 10 — Programar backups automáticos (cron de root)"
 info "Los backups automáticos se instalan en el crontab de ROOT"
 info "para que tengan acceso completo a todos los archivos del sistema."
 blank
-printf "  ${C_DIM}  Tareas recomendadas:${C_RESET}\n"
-printf "  ${C_DIM}    · Backup      → día 1 de cada mes a las 3:00 AM${C_RESET}\n"
-printf "  ${C_DIM}    · Sync Drive  → cada 6 horas${C_RESET}\n"
-printf "  ${C_DIM}    · Limpieza    → logs viejos, día 1 de cada mes${C_RESET}\n"
-blank
-ask "¿Instalar tareas automáticas? (S/n):"
+ask "¿Instalar backup diario (3:00 AM) y sync cada 6 horas? (S/n):"
 read -r INSTALL_CRON
 blank
 
 if [[ "${INSTALL_CRON,,}" != "n" ]]; then
-
-    # --- Frecuencia de backup ---
-    printf "  ${C_BOLD}Frecuencia de backup${C_RESET}\n"
-    printf "  ${C_CYAN}[1]${C_RESET}  Mensual  — día 1 de cada mes a las 3:00 AM  ${C_DIM}[recomendado]${C_RESET}\n"
-    printf "  ${C_CYAN}[2]${C_RESET}  Semanal  — todos los domingos a las 3:00 AM\n"
-    printf "  ${C_CYAN}[3]${C_RESET}  Diario   — todos los días a las 3:00 AM\n"
-    ask "Elige frecuencia de backup [1]:"
-    read -r _bk_freq
-    case "${_bk_freq:-1}" in
-        2) BK_CRON="0 3 * * 0" ;  BK_LABEL="semanal (domingos 3:00 AM)" ;;
-        3) BK_CRON="0 3 * * *" ;  BK_LABEL="diario (3:00 AM)" ;;
-        *) BK_CRON="0 3 1 * *" ;  BK_LABEL="mensual (día 1, 3:00 AM)" ;;
-    esac
-    blank
-
-    # --- Frecuencia de sync ---
-    printf "  ${C_BOLD}Frecuencia de sincronización a Drive${C_RESET}\n"
-    printf "  ${C_CYAN}[1]${C_RESET}  Cada 2 horas\n"
-    printf "  ${C_CYAN}[2]${C_RESET}  Cada 4 horas\n"
-    printf "  ${C_CYAN}[3]${C_RESET}  Cada 6 horas  ${C_DIM}[recomendado]${C_RESET}\n"
-    printf "  ${C_CYAN}[4]${C_RESET}  Cada 12 horas\n"
-    printf "  ${C_CYAN}[5]${C_RESET}  Una vez al día (medianoche)\n"
-    ask "Elige frecuencia de sync [3]:"
-    read -r _sync_freq
-    case "${_sync_freq:-3}" in
-        1) SYNC_CRON="0 */2 * * *"  ; SYNC_LABEL="cada 2 horas" ;;
-        2) SYNC_CRON="0 */4 * * *"  ; SYNC_LABEL="cada 4 horas" ;;
-        4) SYNC_CRON="0 */12 * * *" ; SYNC_LABEL="cada 12 horas" ;;
-        5) SYNC_CRON="0 0 * * *"    ; SYNC_LABEL="una vez al día (medianoche)" ;;
-        *) SYNC_CRON="0 */6 * * *"  ; SYNC_LABEL="cada 6 horas" ;;
-    esac
-    blank
-
     local_marker="# BACKUP-RESTIC-MANAGED"
     local_tmp="$(mktemp)"
     crontab -l 2>/dev/null \
@@ -465,16 +427,16 @@ if [[ "${INSTALL_CRON,,}" != "n" ]]; then
         | grep -v 'backup-restic\|sync-to-drive' > "$local_tmp" || true
     cat >> "$local_tmp" <<EOF
 ${local_marker}
-${BK_CRON} bash ${DEST}/backup-restic.sh --backup >> ${LOG_DIR}/cron.log 2>&1
-${SYNC_CRON} bash ${DEST}/sync-to-drive.sh >> ${LOG_DIR}/cron.log 2>&1
+0 3 * * * bash ${DEST}/backup-restic.sh --backup >> ${LOG_DIR}/cron.log 2>&1
+0 */6 * * * bash ${DEST}/sync-to-drive.sh >> ${LOG_DIR}/cron.log 2>&1
 0 0 1 * * find ${LOG_DIR} -name "*.log" -mtime +30 -delete
 EOF
     crontab "$local_tmp"
     rm -f "$local_tmp"
     ok "Tareas cron instaladas en root:"
-    info "  Backup       → ${BK_LABEL}"
-    info "  Sync a Drive → ${SYNC_LABEL}"
-    info "  Limpieza     → día 1 de cada mes"
+    info "  Backup diario    → 3:00 AM"
+    info "  Sync a Drive     → cada 6 horas"
+    info "  Limpieza de logs → día 1 de cada mes"
 else
     skip "Cron no instalado — puedes hacerlo después desde el menú (opción 11)"
 fi
